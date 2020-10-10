@@ -1,7 +1,12 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 import subprocess
 import logging
 import sys
 import importlib
+import warnings
 
 import yaml
 
@@ -23,12 +28,12 @@ class Launcher:
         self.cwd = cwd
 
     def run(self):
+        """Runs the cmd with args after converting them all to strings via str
+        """
         logger.debug(self.cwd)
         logger.debug("    " + str(self))
         try:
-            subprocess.check_call(
-                [self.cmd] + self.args, cwd=self.cwd, stdin=subprocess.PIPE
-            ),
+            subprocess.check_call(map(str, [self.cmd] + self.args), cwd=self.cwd,),
         except FileNotFoundError:
             raise RuntimeError(
                 "Command '" + self.cmd + "' not found. Make sure it is in $PATH"
@@ -38,7 +43,7 @@ class Launcher:
             raise RuntimeError(self.errormsg.format(str(self)))
 
     def __str__(self):
-        return " ".join([self.cmd] + self.args)
+        return " ".join(map(str, [self.cmd] + self.args))
 
 
 def is_mingw():
@@ -102,6 +107,22 @@ def setup_logging(level, monchrome=False, log_file=None):
     if log_file:
         logging.basicConfig(filename=log_file, filemode="w", level=logging.DEBUG)
 
+    # Redirect Python warnings (from the warnings module) to the standard
+    # logging infrastructure. Warnings end up in the py.warnings category.
+    logging.captureWarnings(True)
+
+    def _formatwarning(message, category, filename, lineno, line=None):
+        # Format FutureWarnings, which are intended for end users, in a way
+        # that strips out all code references, which are meaningless to an end
+        # user.
+        if category == FutureWarning:
+            return message
+
+        return _formatwarning_orig(message, category, filename, lineno, line)
+
+    _formatwarning_orig = warnings.formatwarning
+    warnings.formatwarning = _formatwarning
+
     # Pretty color terminal logging
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
@@ -112,6 +133,7 @@ def setup_logging(level, monchrome=False, log_file=None):
         "__main__",
         "fusesoc",
         "edalize",
+        "py.warnings",
     )
     for package in packages:
         logger = logging.getLogger(package)

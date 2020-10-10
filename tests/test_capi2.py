@@ -1,3 +1,7 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 import pytest
 import os.path
 
@@ -67,22 +71,22 @@ def test_capi2_append():
     flags = {"is_toplevel": True}
 
     flags["target"] = "no_fs_no_fsappend"
-    result = [x.name for x in core.get_files(flags)]
+    result = [x["name"] for x in core.get_files(flags)]
     expected = []
     assert expected == result
 
     flags["target"] = "no_fs_fsappend"
-    result = [x.name for x in core.get_files(flags)]
+    result = [x["name"] for x in core.get_files(flags)]
     expected = ["file3", "file4"]
     assert expected == result
 
     flags["target"] = "fs_no_fsappend"
-    result = [x.name for x in core.get_files(flags)]
+    result = [x["name"] for x in core.get_files(flags)]
     expected = ["file1", "file2"]
     assert expected == result
 
     flags["target"] = "fs_fsappend"
-    result = [x.name for x in core.get_files(flags)]
+    result = [x["name"] for x in core.get_files(flags)]
     expected = ["file1", "file2", "file3", "file4"]
     assert expected == result
 
@@ -128,58 +132,28 @@ def test_capi2_get_files():
 
     expected = [
         {
-            "is_include_file": False,
             "file_type": "vhdlSource",
-            "copyto": "",
             "logical_name": "overridden_logical_name",
             "name": "vlogfile",
         },
         {
-            "is_include_file": False,
             "file_type": "vhdlSource",
-            "copyto": "",
             "logical_name": "default_logical_name",
             "name": "vhdlfile",
         },
+        {"file_type": "user", "copyto": "copied.file", "name": "subdir/dummy.extra",},
         {
-            "is_include_file": False,
-            "file_type": "user",
-            "copyto": "copied.file",
-            "logical_name": "",
-            "name": "subdir/dummy.extra",
-        },
-        {
-            "is_include_file": False,
             "file_type": "tclSource",
             "copyto": "subdir/another.file",
-            "logical_name": "",
             "name": "dummy.tcl",
         },
-        {
-            "copyto": "",
-            "file_type": "verilogSource",
-            "is_include_file": True,
-            "logical_name": "",
-            "name": "vlogfile",
-        },
-        {
-            "copyto": "",
-            "file_type": "vhdlSource",
-            "is_include_file": False,
-            "logical_name": "",
-            "name": "vhdlfile",
-        },
-        {
-            "copyto": "",
-            "file_type": "user",
-            "is_include_file": False,
-            "logical_name": "",
-            "name": "pickthisfile",
-        },
+        {"file_type": "verilogSource", "is_include_file": True, "name": "vlogfile",},
+        {"file_type": "vhdlSource", "name": "vhdlfile",},
+        {"file_type": "user", "name": "pickthisfile",},
     ]
 
     flags = {"tool": "icarus"}
-    result = [vars(x) for x in core.get_files(flags)]
+    result = core.get_files(flags)
     assert expected == result
 
 
@@ -235,6 +209,11 @@ def test_capi2_get_parameters():
         "datatype": "str",
         "paramtype": "vlogparam",
     }
+    realpi = {
+        "datatype": "real",
+        "default": 3.14159,
+        "paramtype": "vlogparam",
+    }
 
     flags = {"is_toplevel": True}
     expected = {"param1": param1}
@@ -278,6 +257,7 @@ def test_capi2_get_parameters():
         "intparam": intparam,
         "boolfalse": boolfalse,
         "booltrue": booltrue,
+        "realpi": realpi,
     }
     result = core.get_parameters(flags)
     assert expected == result
@@ -288,6 +268,7 @@ def test_capi2_get_parameters():
     assert int == type(result["intparam"]["default"])
     assert bool == type(result["boolfalse"]["default"])
     assert bool == type(result["booltrue"]["default"])
+    assert float == type(result["realpi"]["default"])
 
     flags["target"] = "empty"
     expected = {"int0": int0, "emptystr": emptystr}
@@ -300,12 +281,14 @@ def test_capi2_get_parameters():
     intparam["default"] = 0xDEADBEEF
     boolfalse["default"] = True
     booltrue["default"] = False
+    realpi["default"] = 3.14
     expected = {
         "param1": param1,
         "param2": param2,
         "intparam": intparam,
         "boolfalse": boolfalse,
         "booltrue": booltrue,
+        "realpi": realpi,
     }
     assert expected == core.get_parameters(flags)
 
@@ -456,6 +439,12 @@ def test_capi2_get_ttptttg():
             "generator": "generator1",
             "pos": "append",
             "config": {"param1": "a param", "param2": ["list", "of", "stuff"]},
+        },
+        {
+            "name": "testgenerate_with_override",
+            "generator": "generator1",
+            "pos": "append",
+            "config": {"the_value": 138},
         },
     ]
     assert expected == core.get_ttptttg(flags)

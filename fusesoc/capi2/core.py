@@ -1,14 +1,21 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 # FIXME: Add IP-XACT support
 import logging
 import os
-from pyparsing import Forward, OneOrMore, Optional, Suppress, Word, alphanums
 import shutil
 import yaml
 
 from fusesoc import utils
 from fusesoc.provider import get_provider
 from fusesoc.vlnv import Vlnv
+
+from fusesoc.capi2.exprs import Exprs
+
 from edalize import get_edatools
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +25,14 @@ class File:
         self.copyto = ""
         self.file_type = ""
         self.is_include_file = False
+        self.include_path = None
         self.logical_name = ""
         if type(tree) is dict:
             for k, v in tree.items():
                 self.name = String(os.path.expandvars(k))
                 self.file_type = v.get("file_type", "")
                 self.is_include_file = v.get("is_include_file", False)
+                self.include_path = v.get("include_path")
                 self.copyto = v.get("copyto", "")
                 self.logical_name = v.get("logical_name", "")
         else:
@@ -36,39 +45,13 @@ class Genparams(dict):
 
 
 class String(str):
+    def __init__(self, string):
+        self.exprs = None
+
     def parse(self, flags):
-        _flags = []
-        for k, v in flags.items():
-            if v == True:
-                _flags.append(k)
-            elif v in [False, None]:
-                pass
-            else:
-                _flags.append(k + "_" + v)
-
-        def cb_conditional(s, l, t):
-            if (t.cond in _flags) != (t.negate == "!"):
-                return t.expr
-            else:
-                return []
-
-        word = Word(alphanums + ":<>.[]_-,=~/^~")
-        conditional = Forward()
-        conditional << (
-            Optional("!")("negate")
-            + word("cond")
-            + Suppress("?")
-            + Suppress("(")
-            + OneOrMore(conditional ^ word)("expr")
-            + Suppress(")")
-        ).setParseAction(cb_conditional)
-        string = word
-        string_list = OneOrMore(conditional ^ string)
-        s = " ".join(string_list.parseString(self.__str__()))
-        logger.debug(
-            "Parsing '{}' with flags {} => {}".format(self.__str__(), str(_flags), s)
-        )
-        return s
+        if self.exprs is None:
+            self.exprs = Exprs(str(self))
+        return self.exprs.expand(flags)
 
 
 class StringOrList:
@@ -77,6 +60,17 @@ class StringOrList:
             return [String(s) for s in args[0]]
         elif type(args[0]) == str:
             return [String(args[0])]
+
+
+class StringOrDict:
+    def __init__(self, tree):
+        self.params = {}
+        if type(tree) is dict:
+            for k, v in tree.items():
+                self.params = v
+                self.name = String(os.path.expandvars(k))
+        else:
+            self.name = String(os.path.expandvars(tree))
 
 
 class Section:
@@ -199,7 +193,7 @@ class Core:
         if os.path.exists(dst_dir):
             shutil.rmtree(dst_dir)
 
-        src_files = [f.name for f in self.get_files(flags)]
+        src_files = [f["name"] for f in self.get_files(flags)]
 
         for k, v in self._get_vpi(flags).items():
             src_files += [
@@ -214,8 +208,7 @@ class Core:
 
         dirs = list(set(map(os.path.dirname, src_files)))
         for d in dirs:
-            if not os.path.exists(os.path.join(dst_dir, d)):
-                os.makedirs(os.path.join(dst_dir, d))
+            os.makedirs(os.path.join(dst_dir, d), exist_ok=True)
 
         for f in src_files:
             if not os.path.isabs(f):
@@ -331,16 +324,11 @@ class Core:
         for f in src_files:
             pf = f.name.parse(flags)
             if pf:
-                _f = File(
-                    {
-                        pf: {
-                            "copyto": f.copyto,
-                            "file_type": f.file_type,
-                            "is_include_file": f.is_include_file,
-                            "logical_name": f.logical_name,
-                        }
-                    }
-                )
+                _f = {}
+                for k, v in vars(f).items():
+                    if v:
+                        _f[k] = v
+                _f["name"] = pf
                 _src_files.append(_f)
         return _src_files
 
@@ -353,7 +341,63 @@ class Core:
             self._debug(" Found generator " + k)
         return generators
 
-    def get_parameters(self, flags={}):
+    def get_parameters(self, flags={}, ext_parameters={}):
+        def _parse_param_value(name, datatype, default):
+            if datatype == "bool":
+                if default.lower() == "true":
+                    return True
+                elif default.lower() == "false":
+                    return False
+                else:
+                    _s = "{}: Invalid default value '{}' for bool parameter {}"
+                    raise SyntaxError(_s.format(self.name, default, p))
+            elif datatype == "int":
+                if type(default) == int:
+                    return default
+                else:
+                    return int(default, 0)
+            elif datatype == "real":
+                if type(default) == float:
+                    return default
+                else:
+                    return float(default)
+            else:
+                return str(default)
+
+        def _parse_param(flags, name, core_param):
+            parsed_param = {}
+            datatype = core_param.datatype
+            description = core_param.description
+            paramtype = core_param.paramtype.parse(flags)
+
+            if not datatype in ["bool", "file", "int", "real", "str"]:
+                _s = "{} : Invalid datatype '{}' for parameter {}"
+                raise SyntaxError(_s.format(self.name, datatype, p))
+
+            if not paramtype in [
+                "cmdlinearg",
+                "generic",
+                "plusarg",
+                "vlogdefine",
+                "vlogparam",
+            ]:
+                _s = "{} : Invalid paramtype '{}' for parameter {}"
+                raise SyntaxError(_s.format(self.name, paramtype, p))
+            parsed_param = {
+                "datatype": str(core_param.datatype),
+                "paramtype": paramtype,
+            }
+
+            if description:
+                parsed_param["description"] = str(description)
+
+            if core_param.default:
+                parsed_param["default"] = _parse_param_value(
+                    name, datatype, core_param.default
+                )
+
+            return parsed_param
+
         self._debug("Getting parameters for flags '{}'".format(str(flags)))
         target = self._get_target(flags)
         parameters = {}
@@ -364,62 +408,34 @@ class Core:
 
                 p = plist[0]
 
+                # parse might have left us with an empty string for the parameter name
+                # In that case, just go to the next parameter
                 if not p:
                     continue
 
-                if not p in self.parameters:
+                # The parameter exists either in this core...
+                if p in self.parameters:
+                    parameters[p] = _parse_param(flags, p, self.parameters[p])
+
+                # ...or in any of its dependencies
+                elif p in ext_parameters:
+                    parameters[p] = ext_parameters[p]
+                    datatype = parameters[p]["datatype"]
+
+                else:
                     raise SyntaxError(
                         "Parameter '{}', requested by target '{}', was not found".format(
                             p, target.name
                         )
                     )
 
-                datatype = self.parameters[p].datatype
+                # Set default value
                 if len(plist) > 1:
-                    default = plist[1]
-                else:
-                    default = self.parameters[p].default
-                description = self.parameters[p].description
-                paramtype = self.parameters[p].paramtype.parse(flags)
+                    parameters[p]["default"] = _parse_param_value(
+                        p, parameters[p]["datatype"], plist[1]
+                    )
 
-                if not datatype in ["bool", "file", "int", "str"]:
-                    _s = "{} : Invalid datatype '{}' for parameter {}"
-                    raise SyntaxError(_s.format(self.name, datatype, p))
-
-                if not paramtype in [
-                    "cmdlinearg",
-                    "generic",
-                    "plusarg",
-                    "vlogdefine",
-                    "vlogparam",
-                ]:
-                    _s = "{} : Invalid paramtype '{}' for parameter {}"
-                    raise SyntaxError(_s.format(self.name, paramtype, p))
-                parameters[p] = {
-                    "datatype": str(self.parameters[p].datatype),
-                    "paramtype": paramtype,
-                }
-
-                if description:
-                    parameters[p]["description"] = str(description)
-
-                if default:
-                    if datatype == "bool":
-                        if default.lower() == "true":
-                            parameters[p]["default"] = True
-                        elif default.lower() == "false":
-                            parameters[p]["default"] = False
-                        else:
-                            _s = "{}: Invalid default value '{}' for bool parameter {}"
-                            raise SyntaxError(_s.format(self.name, default, p))
-                    elif datatype == "int":
-                        if type(default) == int:
-                            parameters[p]["default"] = default
-                        else:
-                            parameters[p]["default"] = int(default, 0)
-                    else:
-                        parameters[p]["default"] = str(default)
-        self._debug("Found parameters {}".format(parameters))
+            self._debug("Found parameters {}".format(parameters))
         return parameters
 
     def get_toplevel(self, flags):
@@ -443,22 +459,30 @@ class Core:
         if not target:
             return ttptttg
 
-        _ttptttg = self._parse_list(flags, target.generate)
+        _ttptttg = []
+        for f in target.generate:
+            pf = f.name.parse(flags)
+            # f.name might end up empty after parse. In that case, we ignore it
+            if pf:
+                _ttptttg.append({"name": pf, "params": f.params})
+
         if _ttptttg:
             self._debug(" Matched generator instances {}".format(_ttptttg))
         for gen in _ttptttg:
-            if not gen in self.generate:
+            gen_name = gen["name"]
+            if not gen_name in self.generate:
                 raise SyntaxError(
                     "Generator instance '{}', requested by target '{}', was not found".format(
-                        gen, target.name
+                        gen_name, target.name
                     )
                 )
-            params = self.generate[gen].parameters or {}
+            gen_inst = self.generate[gen_name]
+            params = utils.merge_dict(gen_inst.parameters or {}, gen["params"])
             t = {
-                "name": gen,
-                "generator": str(self.generate[gen].generator),
+                "name": gen_name,
+                "generator": str(gen_inst.generator),
                 "config": dict(params),
-                "pos": str(self.generate[gen].position or "append"),
+                "pos": str(self.generate[gen_name].position or "append"),
             }
             ttptttg.append(t)
         return ttptttg
@@ -729,8 +753,8 @@ Target:
       type : String
       desc : File sets to use in target
     - name : generate
-      type : String
-      desc : Parameterized generators to run for this target
+      type : StringOrDict
+      desc : Parameterized generators to run for this target with optional parametrization
     - name : parameters
       type : String
       desc : Parameters to use in target. The parameter default value can be set here with ``param=value``
@@ -908,6 +932,7 @@ A File object represents a physical file. It can be a simple string, with the pa
 Attribute       Type Description
 =============== ==== ===========
 is_include_file bool Treats file as an include file when true
+include_path    str  Explicitly set an include directory, relative to core root, instead of the directory containing the file
 file_type       str  File type. Overrides the file_type set on the containing fileset
 logical_name    str  Logical name, i.e. library for VHDL/SystemVerilog. Overrides the logical_name set on the containing fileset
 =============== ==== ===========

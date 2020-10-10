@@ -1,9 +1,14 @@
 #!/usr/bin/env python
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 import argparse
 import os
 import subprocess
 import sys
 import signal
+import warnings
 
 from fusesoc import __version__
 
@@ -63,35 +68,13 @@ def abort_handler(signal, frame):
 signal.signal(signal.SIGINT, abort_handler)
 
 
-def build(cm, args):
-    logger.warning(
-        "''build'' command is deprecated as it was intended to be used with CAPI1 format.\n"
-        "         It will be removed soon, so please use ''run'' command instead."
-    )
-
-    do_configure = True
-    do_build = not args.setup
-    do_run = False
-    if not args.target:
-        target = "synth"
-    else:
-        target = args.target
-    flags = {"target": target, "tool": args.tool}
-    run_backend(
-        cm,
-        not args.no_export,
-        do_configure,
-        do_build,
-        do_run,
-        flags,
-        None,
-        args.system,
-        args.backendargs,
-        None,
-    )
-
-
 def pgm(cm, args):
+    warnings.warn(
+        "The 'pgm' subcommand is deprecated and will be removed in the next "
+        "release. Use 'fusesoc run --target=synth --run' instead.",
+        FutureWarning,
+    )
+
     do_configure = False
     do_build = False
     do_run = True
@@ -408,21 +391,28 @@ def run_backend(
     if not os.path.exists(eda_api_file):
         do_configure = True
 
+    try:
+        backend_class = get_edatool(tool)
+    except ImportError:
+        logger.error("Backend {!r} not found".format(tool))
+        exit(1)
+
+    edalizer = Edalizer(
+        toplevel=core.name,
+        flags=flags,
+        core_manager=cm,
+        cache_root=cm.config.cache_root,
+        work_root=work_root,
+        export_root=export_root,
+        system_name=system_name,
+    )
+
     if do_configure:
         try:
-            edalizer = Edalizer(
-                toplevel=core.name,
-                flags=flags,
-                core_manager=cm,
-                cache_root=cm.config.cache_root,
-                work_root=work_root,
-                export_root=export_root,
-                system_name=system_name,
-            )
             edalizer.run()
-
-            backend_class = get_edatool(tool)
-            edalizer.parse_args(backend_class, backendargs)
+            edam = edalizer.edalize
+            parsed_args = edalizer.parse_args(backend_class, backendargs, edam)
+            edalizer.add_parsed_args(backend_class, parsed_args)
 
         except SyntaxError as e:
             logger.error(e.msg)
@@ -431,19 +421,15 @@ def run_backend(
             logger.error("Setup failed : {}".format(str(e)))
             exit(1)
         edalizer.to_yaml(eda_api_file)
+    else:
+        edam = yaml_fread(eda_api_file)
+        parsed_args = edalizer.parse_args(backend_class, backendargs, edam)
 
     # Frontend/backend separation
 
     try:
-        if do_configure:
-            edam = edalizer.edalize
-        else:
-            edam = yaml_fread(eda_api_file)
-        backend = get_edatool(tool)(edam=edam, work_root=work_root)
+        backend = backend_class(edam=edam, work_root=work_root)
 
-    except ImportError:
-        logger.error('Backend "{}" not found'.format(tool))
-        exit(1)
     except RuntimeError as e:
         logger.error(str(e))
         exit(1)
@@ -469,40 +455,10 @@ def run_backend(
 
     if do_run:
         try:
-            backend.run(backendargs)
+            backend.run(parsed_args)
         except RuntimeError as e:
             logger.error("Failed to run {} : {}".format(str(core.name), str(e)))
             exit(1)
-
-
-def sim(cm, args):
-    logger.warning(
-        "''sim'' command is deprecated as it was intended to be used with CAPI1 format.\n"
-        "         It will be removed soon, so please use ''run'' command instead."
-    )
-
-    do_configure = not args.keep
-    do_build = not (args.setup or args.keep)
-    do_run = not (args.build_only or args.setup)
-
-    flags = {
-        "flow": "sim",
-        "tool": args.sim,
-        "target": "sim",
-        "testbench": args.testbench,
-    }
-    run_backend(
-        cm,
-        not args.no_export,
-        do_configure,
-        do_build,
-        do_run,
-        flags,
-        None,
-        args.system,
-        args.backendargs,
-        None,
-    )
 
 
 def update(cm, args):
@@ -575,24 +531,6 @@ def parse_args():
     parser.add_argument("--verbose", help="More info messages", action="store_true")
     parser.add_argument("--log-file", help="Write log messages to file")
 
-    # build subparser
-    parser_build = subparsers.add_parser("build", help="Build an FPGA load module")
-    parser_build.add_argument(
-        "--no-export",
-        action="store_true",
-        help="Reference source files from their current location instead of exporting to a build tree",
-    )
-    parser_build.add_argument(
-        "--setup",
-        action="store_true",
-        help="Only create the project files without running the EDA tool",
-    )
-    parser_build.add_argument("--target", help="Override default target")
-    parser_build.add_argument("--tool", help="Override default tool for target")
-    parser_build.add_argument("system")
-    parser_build.add_argument("backendargs", nargs=argparse.REMAINDER)
-    parser_build.set_defaults(func=build)
-
     # init subparser
     parser_init = subparsers.add_parser(
         "init", help="Initialize the FuseSoC core libraries"
@@ -604,7 +542,8 @@ def parse_args():
 
     # pgm subparser
     parser_pgm = subparsers.add_parser(
-        "pgm", help="Program an FPGA with a system configuration"
+        "pgm",
+        help="Program an FPGA with a system configuration. DEPRECATED, use 'run' instead.",
     )
     parser_pgm.add_argument("system")
     parser_pgm.add_argument("backendargs", nargs=argparse.REMAINDER)
@@ -752,42 +691,6 @@ def parse_args():
         "backendargs", nargs=argparse.REMAINDER, help="arguments to be sent to backend"
     )
     parser_run.set_defaults(func=run)
-
-    # sim subparser
-    parser_sim = subparsers.add_parser("sim", help="Setup and run a simulation")
-    parser_sim.add_argument(
-        "--no-export",
-        action="store_true",
-        help="Reference source files from their current location instead of exporting to a build tree",
-    )
-    parser_sim.add_argument(
-        "--sim", help="Override the simulator settings from the system file"
-    )
-    parser_sim.add_argument(
-        "--setup",
-        action="store_true",
-        help="Only create the project files without running the EDA tool",
-    )
-    parser_sim.add_argument(
-        "--build-only",
-        action="store_true",
-        help="Build the simulation binary without running the simulator",
-    )
-    parser_sim.add_argument(
-        "--force",
-        action="store_true",
-        help="Force rebuilding simulation model when directory exists",
-    )
-    parser_sim.add_argument(
-        "--keep",
-        action="store_true",
-        help="Prevent rebuilding simulation model if it exists",
-    )
-    parser_sim.add_argument("--target", help="Override default target")
-    parser_sim.add_argument("--testbench", help="Override default testbench")
-    parser_sim.add_argument("system", help="Select a system to simulate")
-    parser_sim.add_argument("backendargs", nargs=argparse.REMAINDER)
-    parser_sim.set_defaults(func=sim)
 
     # update subparser
     parser_update = subparsers.add_parser(

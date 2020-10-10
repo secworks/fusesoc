@@ -1,3 +1,7 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 import logging
 import os
 import shutil
@@ -9,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 class Coregen(Provider):
     def _checkout(self, local_dir):
+        logger.warning(
+            "The coregen provider is deprecated and will be removed. Consider using a generator for this instead"
+        )
         script_file = self.config.get("script_file")
         project_file = self.config.get("project_file")
         extra_files = self.config.get("extra_files")

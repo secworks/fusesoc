@@ -1,3 +1,7 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 import os
 from setuptools import setup
 
@@ -38,7 +42,7 @@ setup(
     entry_points={"console_scripts": ["fusesoc = fusesoc.main:main"]},
     setup_requires=["setuptools_scm",],
     install_requires=[
-        "edalize>=0.1.6",
+        "edalize>=0.2.2",
         "ipyxact>=0.2.3",
         "pyparsing",
         "pyyaml",

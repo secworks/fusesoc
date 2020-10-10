@@ -1,3 +1,7 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 from collections import OrderedDict
 import importlib
 import logging
@@ -177,10 +181,10 @@ class Core:
 
         for fs in self.file_sets:
             if (not fs.private or flags["is_toplevel"]) and (usage & set(fs.usage)):
-                files += fs.file
+                files += [vars(f) for f in fs.file]
         return files
 
-    def get_parameters(self, flags={}):
+    def get_parameters(self, flags={}, _parameters=None):
         self._debug("Getting parameters for flags '{}'".format(str(flags)))
         parameters = {}
         for k, v in self.parameter.items():
@@ -351,7 +355,7 @@ class Core:
         if os.path.exists(dst_dir):
             shutil.rmtree(dst_dir)
 
-        src_files = [f.name for f in self.get_files(flags)]
+        src_files = [f["name"] for f in self.get_files(flags)]
         if self.vpi and flags["tool"] in ["icarus", "modelsim", "rivierapro"]:
             src_files += [f.name for f in self.vpi.src_files + self.vpi.include_files]
         for section in self.get_scripts(dst_dir, flags).values():

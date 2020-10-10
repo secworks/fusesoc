@@ -1,3 +1,7 @@
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 import argparse
 import logging
 import os
@@ -40,8 +44,6 @@ class Edalizer:
         self.export_root = export_root
         self.system_name = system_name
 
-        self._prepare_work_root()
-
         self.generators = {}
 
         self._generated_cores = []
@@ -71,6 +73,9 @@ class Edalizer:
 
     def run(self):
         """ Run all steps to create a EDA API YAML file """
+
+        # Clean out old work root
+        self._prepare_work_root()
 
         # Run the setup task on all cores (fetch and patch them as needed)
         self.setup_cores()
@@ -139,6 +144,7 @@ class Edalizer:
         first_snippets = []
         snippets = []
         last_snippets = []
+        parameters = {}
         for core in self.cores:
             snippet = {}
 
@@ -158,7 +164,8 @@ class Edalizer:
             rel_root = os.path.relpath(files_root, self.work_root)
 
             # Extract parameters
-            snippet["parameters"] = core.get_parameters(_flags)
+            snippet["parameters"] = core.get_parameters(_flags, parameters)
+            merge_dict(parameters, snippet["parameters"])
 
             # Extract tool options
             snippet["tool_options"] = {
@@ -170,24 +177,23 @@ class Edalizer:
 
             _files = []
             for file in core.get_files(_flags):
-                if file.copyto:
-                    _name = file.copyto
+                _f = file
+                if file.get("copyto"):
+                    _name = file["copyto"]
                     dst = os.path.join(self.work_root, _name)
                     _dstdir = os.path.dirname(dst)
                     if not os.path.exists(_dstdir):
                         os.makedirs(_dstdir)
-                    shutil.copy2(os.path.join(files_root, file.name), dst)
+                    shutil.copy2(os.path.join(files_root, file["name"]), dst)
+                    del _f["copyto"]
                 else:
-                    _name = os.path.join(rel_root, file.name)
-                _files.append(
-                    {
-                        "name": str(_name),
-                        "core": str(core.name),
-                        "file_type": file.file_type,
-                        "is_include_file": file.is_include_file,
-                        "logical_name": file.logical_name,
-                    }
-                )
+                    _name = os.path.join(rel_root, file["name"])
+                _f["name"] = str(_name)
+                _f["core"] = str(core.name)
+                if file.get("include_path"):
+                    _f["include_path"] = os.path.join(rel_root, file["include_path"])
+
+                _files.append(_f)
 
             snippet["files"] = _files
 
@@ -233,14 +239,15 @@ class Edalizer:
         for snippet in first_snippets + snippets + last_snippets:
             merge_dict(self.edalize, snippet)
 
-    def _build_parser(self, backend_class):
+    def _build_parser(self, backend_class, edam):
         typedict = {
             "bool": {"action": "store_true"},
             "file": {"type": str, "nargs": 1, "action": FileAction},
             "int": {"type": int, "nargs": 1},
             "str": {"type": str, "nargs": 1},
+            "real": {"type": float, "nargs": 1},
         }
-        progname = "fusesoc run {}".format(self.edalize["name"])
+        progname = "fusesoc run {}".format(edam["name"])
 
         parser = argparse.ArgumentParser(prog=progname, conflict_handler="resolve")
         param_groups = {}
@@ -254,7 +261,7 @@ class Edalizer:
         param_type_map = {}
 
         paramtypes = backend_class.argtypes
-        for name, param in self.edalize["parameters"].items():
+        for name, param in edam["parameters"].items():
             _description = param.get("description", "No description")
             _paramtype = param["paramtype"]
             if _paramtype in paramtypes:
@@ -301,17 +308,16 @@ class Edalizer:
             backend_args.add_argument("--" + _opt["name"], help=_opt["desc"])
         return parser
 
-    def _add_parsed_args(self, backend_class, parsed_args):
+    def add_parsed_args(self, backend_class, parsed_args):
         _opts = backend_class.get_doc(0)
         # Parse arguments
         backend_members = [x["name"] for x in _opts.get("members", [])]
         backend_lists = [x["name"] for x in _opts.get("lists", [])]
-        known = parsed_args
 
         tool = backend_class.__name__.lower()
         tool_options = self.edalize["tool_options"][tool]
 
-        for key, value in sorted(vars(known).items()):
+        for key, value in sorted(parsed_args.items()):
             if value is None:
                 pass
             elif key in backend_members:
@@ -322,15 +328,21 @@ class Edalizer:
                 tool_options[key] += value.split(" ")
             elif key in self.edalize["parameters"]:
                 _param = self.edalize["parameters"][key]
-                _value = value if type(value) == bool else value[0]
-                _param["default"] = _value
+                _param["default"] = value
             else:
                 raise RuntimeError("Unknown parameter " + key)
 
-    def parse_args(self, backend_class, backendargs):
-        parser = self._build_parser(backend_class)
+    def parse_args(self, backend_class, backendargs, edam):
+        parser = self._build_parser(backend_class, edam)
         parsed_args = parser.parse_args(backendargs)
-        self._add_parsed_args(backend_class, parsed_args)
+
+        args_dict = {}
+        for key, value in sorted(vars(parsed_args).items()):
+            if value is None:
+                continue
+            _value = value[0] if type(value) == list else value
+            args_dict[key] = _value
+        return args_dict
 
     def to_yaml(self, edalize_file):
         return utils.yaml_fwrite(edalize_file, self.edalize)
@@ -390,7 +402,7 @@ class Ttptttg:
 
         args = [
             os.path.join(os.path.abspath(self.generator.root), self.generator.command),
-            generator_input_file,
+            os.path.abspath(generator_input_file),
         ]
 
         if self.generator.interpreter:

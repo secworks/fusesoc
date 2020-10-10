@@ -1,4 +1,8 @@
 CAPI=2:
+# Copyright FuseSoC contributors
+# Licensed under the 2-Clause BSD License, see LICENSE for details.
+# SPDX-License-Identifier: BSD-2-Clause
+
 name : ::generate:0
 
 filesets:
@@ -10,7 +14,7 @@ targets:
   default:
     filesets :
       - default
-    generate : [testgenerate_without_params, testgenerate_with_params]
+    generate : [testgenerate_without_params, testgenerate_with_params, testgenerate_with_override : {the_value : 138}]
     toplevel : na
 
   nogenerate: {generate : []}
@@ -27,3 +31,8 @@ generate:
     parameters:
       param1 : a param
       param2: [list, of, stuff]
+
+  testgenerate_with_override:
+    generator: generator1
+    parameters:
+      the_value : 1234
